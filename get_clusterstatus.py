@@ -1,18 +1,34 @@
 import json
 import requests
 from requests.auth import HTTPBasicAuth
-import maskpass
+#import maskpass
 import argparse
 import sys
 import concurrent.futures
 import asyncio
 import pprint
+import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-t", help="Specify Target Fusion Environment IP/Hostname", required=True)
 parser.add_argument("-u", help="Specify Fusion username", required=True)
 parser.add_argument("-f", help="Specify file name to write to", required=False)
 args = parser.parse_args()
+
+def firstPassword(item_property):
+    try:
+        items = subprocess.check_output(["op", "item", "get", item_property], stderr=subprocess.STDOUT).decode("utf-8")
+        lines = items.split("\n")
+        for line in lines:
+            if line.strip().startswith("password:"):
+                password = line.split(":")[1].strip()
+                return password
+        
+        print("Error: Password not found in 1Password")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"Error fetching password from 1Password: {e.output}")
+        sys.exit(1)
 
 def get_collections(url, username, pwd):
     headers =  {"Content-Type":"application/json"}
@@ -57,7 +73,7 @@ async def main():
     # get CLI args
     cmd_args   = sys.argv
     url        = str()
-    pwd        = maskpass.askpass(prompt="Password:", mask="#")
+    pwd        = firstPassword("Kohler-dev-Readonly-FusionUI")
     filename   = str()
     write_file = False
 
