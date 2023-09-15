@@ -33,7 +33,6 @@ def get_collection_status(url, username, pwd):
         url = url[:-1]
     
     response = requests.get(url, auth=basic, headers=headers)
-    #response = requests.get(url + "/api/collections/" + collection_id + "/status", auth=basic, headers=headers)
 
     return response.json()
 
@@ -102,18 +101,6 @@ async def main():
         write_to_file(filename, json.dumps(clusterstatus_dict, indent=4))
     else:
         print(json.dumps(clusterstatus_dict, indent=4))
-    # # loop through collections and build clusterstatus json
-    # cluster_status_dict = dict()
-    
-    # for collection in collections_list:
-    #     this_id = collection["id"]
-    #     this_status = get_collection_status(url, username, pwd, this_id)
-    #     cluster_status_dict[this_id] = this_status
-    
-    # cluster_status_json = json.dumps(cluster_status_dict)
-    
-    # return cluster_status_json
-
 
 
 if __name__ == '__main__':
