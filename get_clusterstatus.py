@@ -1,107 +1,99 @@
 import json
 import requests
 from requests.auth import HTTPBasicAuth
-import maskpass
+import subprocess
 import argparse
 import sys
 import concurrent.futures
 import asyncio
-import pprint
+from tabulate import tabulate
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-t", help="Specify Target Fusion Environment IP/Hostname", required=True)
-parser.add_argument("-u", help="Specify Fusion username", required=True)
-parser.add_argument("-f", help="Specify file name to write to", required=False)
+parser = argparse.ArgumentParser(description="Get the status of collections.")
+parser.add_argument("-t", "--target", help="Specify Target Fusion Environment IP/Hostname", required=True)
+parser.add_argument("-u", "--username", help="Specify Fusion username", required=True)
+parser.add_argument("-f", "--file", help="Specify file name to write to", required=False)
+parser.add_argument("-c", "--collection", help="Specify a single collection to output", required=False)
+parser.add_argument("-p", "--password-item", help="Specify 1Password item title to retrieve Fusion password", required=True)
 args = parser.parse_args()
 
-def get_collections(url, username, pwd):
-    headers =  {"Content-Type":"application/json"}
-    basic   = HTTPBasicAuth(username, pwd)
-    
-    if url.endswith("/"):
-        url = url[:-1]
+def firstPassword(item_property):
+    try:
+        items = subprocess.check_output(["op", "item", "get", item_property], stderr=subprocess.STDOUT).decode("utf-8")
+        lines = items.split("\n")
+        for line in lines:
+            if line.strip().startswith("password:"):
+                password = line.split(":")[1].strip()
+                return password
+        print("Error: Password not found in 1Password CLI output.")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"Error fetching password from 1Password: {e.output}")
+        sys.exit(1)
 
+def get_collections(url, username, pwd):
+    headers = {"Content-Type":"application/json"}
+    basic = HTTPBasicAuth(username, pwd)
     response = requests.get(url + "/api/collections", auth=basic, headers=headers)
-    
     return response.json()
 
 def get_collection_status(url, username, pwd):
-    headers =  {"Content-Type":"application/json"}
-    basic   = HTTPBasicAuth(username, pwd)
-    
-    if url.endswith("/"):
-        url = url[:-1]
-    
+    headers = {"Content-Type":"application/json"}
+    basic = HTTPBasicAuth(username, pwd)
     response = requests.get(url, auth=basic, headers=headers)
-
     return response.json()
 
 def get_collection_urls(url, ids_list):
-
-    return_list = list()
-
-    if url.endswith("/"):
-        url = url[:-1]
-
-    for id in ids_list:
-       return_list.append(url + "/api/collections/" + id + "/status/")
-
-    return return_list
-
-def write_to_file(file_path, content):
-    with open(file_path, "w") as dest:
-        pprint.pprint(json.loads(content), dest)
-    return
+    return [url + "/api/collections/" + id + "/status/" for id in ids_list]
 
 async def main():
-    # get CLI args
-    cmd_args   = sys.argv
-    url        = str()
-    pwd        = maskpass.askpass(prompt="Password:", mask="#")
-    filename   = str()
-    write_file = False
+    url = args.target
+    if not url.startswith("http"):
+        url = "https://" + url
+    username = args.username
+    pwd = firstPassword(args.password_item)
 
-    for opt in range(len(cmd_args)):
-        # this flag will set commit to true, regardless of config
-        if cmd_args[opt] == '-t':
-            url = cmd_args[opt + 1]
-            if not url.startswith("http"):
-                url = "https://" + url
-        if cmd_args[opt] == '-u':
-            username = cmd_args[opt + 1]
-        if cmd_args[opt] == '-f':
-            write_file = True
-            filename   = cmd_args[opt + 1]
-    
-    # get list of all Solr collections for Fusion env
     collections_list = get_collections(url, username, pwd)
-    ids_list         = list()
-    urls_list        = list()
-    
-    for collection in collections_list:
-        this_id = collection["id"]
-        ids_list.append(this_id)
-
+    ids_list = [collection["id"] for collection in collections_list]
     urls_list = get_collection_urls(url, ids_list)
 
-    clusterstatus_dict = dict()
-
+    clusterstatus_dict = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=10000) as executor:
-        futures = []
-        for url in urls_list:futures.append(executor.submit(get_collection_status, url, username, pwd))
+        futures = [executor.submit(get_collection_status, url, username, pwd) for url in urls_list]
         concurrent.futures.wait(futures)
         for status in futures:
             if "configName" not in status.result().keys():
                 continue
             this_status = status.result()
-            this_id     = this_status["configName"]
-            clusterstatus_dict[this_id] = status.result()
-    
-    if write_file:
-        write_to_file(filename, json.dumps(clusterstatus_dict, indent=4))
-    else:
-        print(json.dumps(clusterstatus_dict, indent=4))
+            this_id = this_status["configName"]
+            clusterstatus_dict[this_id] = this_status
 
+    if args.collection:
+        collection_name = args.collection
+        if collection_name in clusterstatus_dict:
+            clusterstatus_dict = {collection_name: clusterstatus_dict[collection_name]}
+        else:
+            print(f"Error: Collection '{collection_name}' not found.")
+            sys.exit(1)
+
+    formatted_output = []
+    for collection_name, details in clusterstatus_dict.items():
+        for shard, shard_data in details['shards'].items():
+            for replica, replica_data in shard_data['replicas'].items():
+                formatted_output.append([
+                    collection_name,
+                    details['replicationFactor'],
+                    details['maxShardsPerNode'],
+                    shard,
+                    replica_data['state'],
+                    replica_data['core'],
+                    replica_data['base_url'],
+                    replica_data['node_name']
+                ])
+
+    table_headers = ["Collection", "Replication Factor", "Max Shards Per Node", "Shard", "State", "Core", "Base URL", "Node Name"]
+    print(tabulate(formatted_output, headers=table_headers, tablefmt="grid"))
 
 if __name__ == '__main__':
+    import warnings
+    warnings.simplefilter('ignore')
     asyncio.run(main())
