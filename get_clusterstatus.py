@@ -1,4 +1,3 @@
-import json
 import requests
 from requests.auth import HTTPBasicAuth
 import subprocess
@@ -7,6 +6,7 @@ import sys
 import concurrent.futures
 import asyncio
 from tabulate import tabulate
+from requests.adapters import HTTPAdapter
 
 parser = argparse.ArgumentParser(description="Get the status of collections.")
 parser.add_argument("-t", "--target", help="Specify Target Fusion Environment IP/Hostname", required=True)
@@ -33,7 +33,9 @@ def firstPassword(item_property):
 def get_collections(url, username, pwd):
     headers = {"Content-Type":"application/json"}
     basic = HTTPBasicAuth(username, pwd)
-    response = requests.get(url + "/api/collections", auth=basic, headers=headers)
+    sesh = requests.Session()
+    sesh.mount('https://', HTTPAdapter(pool_connections=3))
+    response = sesh.get(url + "/api/collections", auth=basic, headers=headers)
     return response.json()
 
 def get_collection_status(url, username, pwd):
@@ -49,6 +51,8 @@ async def main():
     url = args.target
     if not url.startswith("http"):
         url = "https://" + url
+    if url.endswith("/"):
+        url = url[:-1]
     username = args.username
     pwd = firstPassword(args.password_item)
 
@@ -57,7 +61,7 @@ async def main():
     urls_list = get_collection_urls(url, ids_list)
 
     clusterstatus_dict = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10000) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
         futures = [executor.submit(get_collection_status, url, username, pwd) for url in urls_list]
         concurrent.futures.wait(futures)
         for status in futures:
@@ -80,18 +84,17 @@ async def main():
         for shard, shard_data in details['shards'].items():
             for replica, replica_data in shard_data['replicas'].items():
                 formatted_output.append([
-                    collection_name,
+                    collection_name.replace(":8983/solr", ""),
                     details['replicationFactor'],
                     details['maxShardsPerNode'],
                     shard,
                     replica_data['state'],
                     replica_data['core'],
-                    replica_data['base_url'],
-                    replica_data['node_name']
+                    replica_data['base_url']
                 ])
 
-    table_headers = ["Collection", "Replication Factor", "Max Shards Per Node", "Shard", "State", "Core", "Base URL", "Node Name"]
-    print(tabulate(formatted_output, headers=table_headers, tablefmt="grid"))
+    table_headers = ["Collection", "Replication", "Max Shards", "Shard", "State", "Core", "Base URL"]
+    print(tabulate(formatted_output, headers=table_headers, tablefmt="pretty"))
 
 if __name__ == '__main__':
     import warnings
